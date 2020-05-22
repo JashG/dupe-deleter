@@ -1,10 +1,19 @@
 import os
+import time
+import stat
 from hashlib import blake2b
 from collections import defaultdict
 
+# Number of bytes to scan when generating small hash
 SMALL_CHUNK = 1024  # bytes
+# Delete criteria
+DELETE_CRITERIA = {
+    'name': 'name',
+    'last_modified': 'last_modified',
+}
 
 # Files that were unable to be processed; will be printed in console output
+# TODO: When adding class structure, this won't be a global variable
 error_files = []
 
 
@@ -37,14 +46,29 @@ def generate_hash(file_name, small_hash=True):
 
 def check_duplicates(directory=None, recursive=False):
     # Stores all files that have the same size
-    files_by_size = __find_files_by_size__(directory, recursive)
+    files_by_size = __find_files_by_size(directory, recursive)
     # Stores all duplicate files (same size and same contents)
-    duplicate_files = __find_duplicate_files__(files_by_size)
+    duplicate_files = __scan_duplicate_files(files_by_size)
 
     return duplicate_files
 
 
-def __find_files_by_size__(directory, recursive=False):
+def delete_duplicates(directory=None,
+                      recursive=False,
+                      delete_criteria='name',
+                      max_size=1):
+    # Stores all files that have the same size
+    files_by_size = __find_files_by_size(directory, recursive)
+    # Delete all duplicate files (same size and same contents)
+    duplicate_files = __scan_duplicate_files(files_by_size,
+                                             delete=True,
+                                             delete_criteria=delete_criteria,
+                                             max_size=max_size)
+
+    return duplicate_files
+
+
+def __find_files_by_size(directory, recursive=False):
     files_by_size = defaultdict(list)
 
     for (dir_path, dir_names, file_names) in os.walk(directory):
@@ -66,12 +90,27 @@ def __find_files_by_size__(directory, recursive=False):
     return files_by_size
 
 
-def __find_duplicate_files__(files_by_size):
-    # Key is tuple (file size, large hash), value is list of duplicate files
-    duplicate_files = defaultdict(list)
-    # Key is tuple (file size, small hash), value is file path
+def __scan_duplicate_files(files_by_size,
+                           delete=False,
+                           delete_criteria='name',
+                           max_size=1):
+    """
+
+    :param files_by_size: Dict of files to scan, where key is size (bytes) and value is list of
+    File objects of that size
+    :param delete: Whether or not to delete the duplicate files found
+    :param delete_criteria: Criteria that determines which file to keep when a duplicate(s) is found;
+    see DELETE_CRITERIA list
+    :param max_size: The maximum size file to scan (in MB); files above this threshold will be skipped
+    :return:
+    """
+    # Key is tuple (file size, large hash), value is DuplicateFileHandler that stores original and
+    # duplicate files
+    duplicate_files = defaultdict(DuplicateFileHandler)
+    # Key is tuple (file size, small hash), value is first file path we encounter
     small_hash_files = defaultdict(str)
-    # Key is (file size, large hash), value is first file we find with the corresponding large hash
+    # Key is (file size, large hash), value is file we consider to be the 'original' file based on
+    # the delete_criteria
     large_hash_files = defaultdict(str)
 
     for files in files_by_size.values():
@@ -86,6 +125,19 @@ def __find_duplicate_files__(files_by_size):
             # Returns hash of full file, or small hash if it already covers the entire file
             def get_large_hash():
                 return generate_hash(file_path, small_hash=False) if (file_size > SMALL_CHUNK) else small_hash
+
+            # When a duplicate file is discovered, compare the original file with the duplicate
+            # and determine if they need to be swapped based on delete_criteria
+            def should_swap_files(original_file, duplicate_file):
+                if delete_criteria == DELETE_CRITERIA['name']:
+                    # If original file comes later alphabetically, we should swap
+                    return original_file > duplicate_file
+                elif delete_criteria == DELETE_CRITERIA['last_modified']:
+                    original_mod_time = os.path.getmtime(original_file)
+                    duplicate_mod_time = os.path.getmtime(duplicate_file)
+
+                    # If original file was modified before duplicate, we should swap
+                    return original_mod_time < duplicate_mod_time
 
             # For each file with the same size, compute the small and large hashes
             try:
@@ -105,21 +157,26 @@ def __find_duplicate_files__(files_by_size):
             # If such a file does exist, there's no need to store this one.
             # Instead, just see if there exists a file of the same size and large hash
             else:
-                existing_large_hash_file = large_hash_files[(file_size, large_hash)]
+                duplicate_handler = duplicate_files[(file_size, large_hash)]
+                existing_large_hash_file = large_hash_files[(file_size, large_hash)]  # duplicate_handler.get_original()
 
                 # If this is the first file we've come across with this large hash, store it
                 if not existing_large_hash_file:
                     large_hash_files[(file_size, large_hash)] = file_path
-                # If we've already come across a file with the same large hash, let's store
-                # this file in our duplicates
+                    # duplicate_handler.set_original(file_path)
                 else:
-                    duplicates = duplicate_files[(file_size, large_hash)]
-                    # If this is the first duplicate we've come across, make sure the first file
-                    # we found with the same large hash is also saved
-                    if len(duplicates) == 0:
-                        duplicates.append(existing_large_hash_file)
-
-                    duplicates.append(file_path)
+                    # Figure out if the duplicate we found should be treated as the original file
+                    # based on the delete_criteria
+                    if should_swap_files(existing_large_hash_file, file_path):
+                        large_hash_files[(file_size, large_hash)] = file_path
+                        duplicate_handler.set_original(file_path)
+                        duplicate_handler.append_duplicate(existing_large_hash_file)
+                    else:
+                        # If this is the first duplicate we've encountered, we need to also set
+                        # the original file
+                        if not duplicate_handler.get_original():
+                            duplicate_handler.set_original(existing_large_hash_file)
+                        duplicate_handler.append_duplicate(file_path)
 
         return duplicate_files
 
@@ -130,3 +187,19 @@ class File:
         self.path = path
         self.size = size
         self.error = error
+
+
+class DuplicateFileHandler:
+
+    def __init__(self):
+        self.original = ''
+        self.duplicates = []
+
+    def set_original(self, path):
+        self.original = path
+
+    def get_original(self):
+        return self.original
+
+    def append_duplicate(self, path):
+        self.duplicates.append(path)
