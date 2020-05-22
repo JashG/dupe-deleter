@@ -1,5 +1,4 @@
 import os
-import sys
 from hashlib import blake2b
 from collections import defaultdict
 
