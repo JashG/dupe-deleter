@@ -106,11 +106,12 @@ def __scan_duplicate_files(files_by_size,
     """
     # Key is tuple (file size, large hash), value is DuplicateFileHandler that stores original and
     # duplicate files
-    duplicate_files = defaultdict(DuplicateFileHandler)
-    # Key is tuple (file size, small hash), value is first file path we encounter
+    duplicate_files = defaultdict(lambda: DuplicateFileHandler())
+    # Key is tuple (file size, small hash), value is first file path we encounter with those values
     small_hash_files = defaultdict(str)
     # Key is (file size, large hash), value is file we consider to be the 'original' file based on
-    # the delete_criteria
+    # the delete_criteria. We use this because it stores every file with a unique large hash; however,
+    # if that file doesn't have a duplicate, we don't want to store it in duplicate_files.
     large_hash_files = defaultdict(str)
 
     for files in files_by_size.values():
@@ -121,6 +122,8 @@ def __scan_duplicate_files(files_by_size,
         for file in files:
             file_path = file.path
             file_size = file.size
+
+            print(file_path)
 
             # Returns hash of full file, or small hash if it already covers the entire file
             def get_large_hash():
@@ -157,17 +160,20 @@ def __scan_duplicate_files(files_by_size,
             # If such a file does exist, there's no need to store this one.
             # Instead, just see if there exists a file of the same size and large hash
             else:
+                print("Checking Large Hash for: ", file_path)
                 duplicate_handler = duplicate_files[(file_size, large_hash)]
                 existing_large_hash_file = large_hash_files[(file_size, large_hash)]  # duplicate_handler.get_original()
 
                 # If this is the first file we've come across with this large hash, store it
                 if not existing_large_hash_file:
+                    print("First Large Hash for: ", file_path)
                     large_hash_files[(file_size, large_hash)] = file_path
-                    # duplicate_handler.set_original(file_path)
                 else:
                     # Figure out if the duplicate we found should be treated as the original file
                     # based on the delete_criteria
+                    print("Duplicate found for: ", file_path)
                     if should_swap_files(existing_large_hash_file, file_path):
+                        print("Swapping: ", existing_large_hash_file, file_path)
                         large_hash_files[(file_size, large_hash)] = file_path
                         duplicate_handler.set_original(file_path)
                         duplicate_handler.append_duplicate(existing_large_hash_file)
@@ -175,10 +181,15 @@ def __scan_duplicate_files(files_by_size,
                         # If this is the first duplicate we've encountered, we need to also set
                         # the original file
                         if not duplicate_handler.get_original():
+                            print("It's our first duplicate: ", file_path)
                             duplicate_handler.set_original(existing_large_hash_file)
+                        print("Adding duplicate: ", file_path)
                         duplicate_handler.append_duplicate(file_path)
 
-        return duplicate_files
+                print("Updated duplicate list: ", duplicate_handler.duplicates)
+                print("\n")
+
+    return duplicate_files
 
 
 class File:
@@ -191,9 +202,12 @@ class File:
 
 class DuplicateFileHandler:
 
-    def __init__(self):
-        self.original = ''
-        self.duplicates = []
+    def __init__(self, original='', duplicates=None):
+        self.original = original
+        if duplicates is None:
+            self.duplicates = []
+        else:
+            self.duplicates = duplicates
 
     def set_original(self, path):
         self.original = path
