@@ -1,2 +1,2 @@
 # dupe-deleter
-Simple CLI to delete duplicates of files in your file system
+CLI to delete your duplicate files on various platforms
